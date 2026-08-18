@@ -83,7 +83,7 @@ class CapturePanel(QWidget):
         download_group = QGroupBox("Download from Camera")
         download_layout = QVBoxLayout(download_group)
 
-        # Time range
+        # Time range selection
         time_layout = QHBoxLayout()
         time_layout.addWidget(QLabel("From:"))
         self.start_time = QDateTimeEdit()
@@ -104,6 +104,7 @@ class CapturePanel(QWidget):
         self.max_count = QSpinBox()
         self.max_count.setRange(1, 1000)
         self.max_count.setValue(100)
+        self.max_count.setMaximumWidth(80)
         count_layout.addWidget(self.max_count)
         count_layout.addStretch()
         download_layout.addLayout(count_layout)
