@@ -2,8 +2,8 @@
 Download Thread
 카메라에서 사진 다운로드를 위한 백그라운드 스레드
 
-Content Transfer Mode에서 표준 PTP 명령(GetObjectHandles, GetObjectInfo, GetObject)을
-사용하여 카메라의 SD 카드에서 파일을 브라우징하고 다운로드합니다.
+인증된 세션에서 SetContentsTransferMode를 활성화한 후
+표준 PTP 명령(GetObjectHandles, GetObjectInfo, GetObject)을 사용합니다.
 """
 
 import os
@@ -40,7 +40,7 @@ class DownloadThread(QThread):
         self.max_count = max_count
 
     def run(self):
-        """Run download process using PTP commands in Content Transfer Mode"""
+        """Run download process - try multiple strategies"""
         try:
             logger.info(f"Starting download: {self.start_time} ~ {self.end_time}, max={self.max_count}")
 
@@ -62,39 +62,36 @@ class DownloadThread(QThread):
                 self.finished_signal.emit(0, 0)
                 return
 
-            # Close current session and open Content Transfer Mode session
-            logger.info("Switching to Content Transfer Mode...")
+            # Strategy: Use SetContentsTransferMode in authenticated session
+            logger.info("Enabling Content Transfer Mode via SetContentsTransferMode...")
 
             try:
-                transport.send(PTPOpCode.CLOSE_SESSION)
-                logger.info("Closed current session")
+                # SetContentsTransferMode with params from v3-Windows SDK:
+                # Param1: 0x02 (SELECT_ON_REMOTE_DEVICE)
+                # Param2: 0x01 (MODE_ON)
+                # Param3: 0x00 (ADD_INFO_NONE)
+                resp = transport.send(
+                    SDIOOpCode.SET_CONTENTS_TRANSFER_MODE,
+                    [0x02, 0x01, 0x00]
+                )
+                logger.info(f"SetContentsTransferMode response: 0x{resp.code:04X}")
+                time.sleep(2.0)  # Wait for camera to switch mode
             except Exception as e:
-                logger.warning(f"Close session warning: {e}")
+                logger.warning(f"SetContentsTransferMode failed: {e}")
+                # Try to clear any stall
+                try:
+                    transport.clear_halt()
+                except:
+                    pass
 
-            # Open SDIO session with Content Transfer Mode (function_mode=1)
-            transport._session_id = 0
-            transport._transaction_id = 0
-
-            try:
-                resp = transport.send(SDIOOpCode.SDIO_OPEN_SESSION, [1, 1])
-                if resp.code != ResponseCode.OK:
-                    raise Exception(f"SDIO_OpenSession failed: 0x{resp.code:04X}")
-                logger.info("Opened SDIO session in Content Transfer Mode")
-            except Exception as e:
-                logger.error(f"Content Transfer session failed: {e}")
-                self._recover_session(cam, transport, PTPOpCode)
-                self.error.emit(f"Content Transfer Mode not supported: {e}")
-                self.finished_signal.emit(0, 0)
-                return
-
-            # Use standard PTP commands to browse files
+            # Now try to get storage and files
             try:
                 logger.info("Getting storage IDs...")
                 storage_ids = self._get_storage_ids(transport, PTPOpCode, ResponseCode)
                 logger.info(f"Storage IDs: {[hex(s) for s in storage_ids]}")
 
                 if not storage_ids:
-                    storage_ids = [0x00010001]  # Default
+                    storage_ids = [0x00010001]  # Default SD card
 
                 # Get all image files
                 all_images = []
@@ -107,13 +104,13 @@ class DownloadThread(QThread):
 
             except Exception as e:
                 logger.error(f"Failed to enumerate files: {e}")
-                self._recover_session(cam, transport, PTPOpCode)
+                self._disable_transfer_mode(transport, SDIOOpCode)
                 self.error.emit(f"Failed to list files: {e}")
                 self.finished_signal.emit(0, 0)
                 return
 
             if not all_images:
-                self._recover_session(cam, transport, PTPOpCode)
+                self._disable_transfer_mode(transport, SDIOOpCode)
                 self.error.emit("No image files found on camera")
                 self.finished_signal.emit(0, 0)
                 return
@@ -130,17 +127,15 @@ class DownloadThread(QThread):
                             filtered.append(img)
                             logger.info(f"Matched: {img.get('filename')} @ {img_time}")
                     except Exception as e:
-                        # If can't parse, include anyway
                         logger.debug(f"Date parse error: {e}")
                         filtered.append(img)
                 else:
-                    # No date info, include anyway
                     filtered.append(img)
 
             logger.info(f"Filtered to {len(filtered)} images in time range")
 
             if not filtered:
-                self._recover_session(cam, transport, PTPOpCode)
+                self._disable_transfer_mode(transport, SDIOOpCode)
                 self.error.emit(f"No images found between {self.start_time} and {self.end_time}")
                 self.finished_signal.emit(0, 0)
                 return
@@ -165,8 +160,8 @@ class DownloadThread(QThread):
                 except Exception as e:
                     logger.error(f"Download failed: {e}")
 
-            # Recover normal Remote Control Mode session
-            self._recover_session(cam, transport, PTPOpCode)
+            # Disable transfer mode
+            self._disable_transfer_mode(transport, SDIOOpCode)
 
             self.finished_signal.emit(success_count, total)
 
@@ -174,6 +169,17 @@ class DownloadThread(QThread):
             logger.exception(f"Download error: {e}")
             self.error.emit(f"Download error: {str(e)}")
             self.finished_signal.emit(0, 0)
+
+    def _disable_transfer_mode(self, transport, SDIOOpCode):
+        """Disable content transfer mode"""
+        try:
+            logger.info("Disabling Content Transfer Mode...")
+            transport.send(
+                SDIOOpCode.SET_CONTENTS_TRANSFER_MODE,
+                [0x02, 0x00, 0x00]  # MODE_OFF
+            )
+        except Exception as e:
+            logger.debug(f"Disable transfer mode: {e}")
 
     def _get_storage_ids(self, transport, PTPOpCode, ResponseCode) -> list:
         """Get storage IDs using PTP command"""
@@ -283,6 +289,23 @@ class DownloadThread(QThread):
                     except Exception as e:
                         logger.debug(f"Failed to get info for handle {hex(h)}: {e}")
 
+        # If still nothing, try all objects
+        if not all_images:
+            logger.info("  Trying all objects query...")
+            handles = self._get_object_handles(transport, storage_id, 0, 0xFFFFFFFF, PTPOpCode, ResponseCode)
+            logger.info(f"  Total object handles: {len(handles)}")
+            for h in handles:
+                try:
+                    info = self._get_object_info(transport, h, PTPOpCode, ResponseCode)
+                    if info and info.get('format') in image_formats:
+                        all_images.append(info)
+                    elif info:
+                        fn = info.get('filename', '').lower()
+                        if fn.endswith('.jpg') or fn.endswith('.jpeg') or fn.endswith('.arw'):
+                            all_images.append(info)
+                except Exception as e:
+                    logger.debug(f"Failed to get info for handle {hex(h)}: {e}")
+
         # Sort by capture date (newest first)
         all_images.sort(key=lambda x: x.get('capture_date', ''), reverse=True)
         return all_images
@@ -321,34 +344,3 @@ class DownloadThread(QThread):
             return save_path
 
         return None
-
-    def _recover_session(self, cam, transport, PTPOpCode):
-        """Recover normal Remote Control Mode session after Content Transfer"""
-        try:
-            logger.info("Recovering Remote Control Mode session...")
-
-            # Close current session
-            try:
-                transport.send(PTPOpCode.CLOSE_SESSION)
-            except:
-                pass
-
-            time.sleep(0.5)
-
-            # Disconnect and reconnect USB
-            transport.disconnect()
-            time.sleep(1.0)
-            transport.connect()
-
-            # Open normal PTP session
-            transport._session_id = 0
-            transport._transaction_id = 0
-            resp = transport.send(PTPOpCode.OPEN_SESSION, [1])
-
-            # Re-authenticate
-            cam._authenticated = False
-            cam.authenticate()
-
-            logger.info("Recovered to Remote Control Mode")
-        except Exception as e:
-            logger.error(f"Session recovery failed: {e}")
