@@ -1,4 +1,7 @@
-# Sony Camera Wi-Fi Remote Control
+# Sony Camera USB Remote Control
 # Dependencies
 
 PyQt5>=5.15.0
+
+# pysonycam - install from local folder:
+# pip install -e ../pysonycam

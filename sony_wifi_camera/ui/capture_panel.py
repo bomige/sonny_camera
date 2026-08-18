@@ -8,9 +8,10 @@ from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QLabel, QLineEdit, QPushButton, QFileDialog
+    QLabel, QLineEdit, QPushButton, QFileDialog,
+    QDateTimeEdit, QSpinBox, QProgressBar
 )
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import pyqtSignal, QDateTime
 
 from .styles import AppStyles
 
@@ -21,6 +22,7 @@ class CapturePanel(QWidget):
     # Signals
     capture_requested = pyqtSignal(str)  # save_path
     liveview_toggle_requested = pyqtSignal()
+    download_requested = pyqtSignal(object, object, int)  # start_time, end_time, count
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -77,6 +79,48 @@ class CapturePanel(QWidget):
 
         layout.addWidget(save_group)
 
+        # Download from camera group
+        download_group = QGroupBox("Download from Camera")
+        download_layout = QVBoxLayout(download_group)
+
+        # Time range
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("From:"))
+        self.start_time = QDateTimeEdit()
+        self.start_time.setDateTime(QDateTime.currentDateTime().addSecs(-3600))  # 1 hour ago
+        self.start_time.setCalendarPopup(True)
+        time_layout.addWidget(self.start_time)
+
+        time_layout.addWidget(QLabel("To:"))
+        self.end_time = QDateTimeEdit()
+        self.end_time.setDateTime(QDateTime.currentDateTime())
+        self.end_time.setCalendarPopup(True)
+        time_layout.addWidget(self.end_time)
+        download_layout.addLayout(time_layout)
+
+        # Max count
+        count_layout = QHBoxLayout()
+        count_layout.addWidget(QLabel("Max files:"))
+        self.max_count = QSpinBox()
+        self.max_count.setRange(1, 1000)
+        self.max_count.setValue(100)
+        count_layout.addWidget(self.max_count)
+        count_layout.addStretch()
+        download_layout.addLayout(count_layout)
+
+        # Download button
+        self.download_btn = QPushButton("Download Photos")
+        self.download_btn.setEnabled(False)
+        self.download_btn.clicked.connect(self._on_download_clicked)
+        download_layout.addWidget(self.download_btn)
+
+        # Progress bar
+        self.download_progress = QProgressBar()
+        self.download_progress.setVisible(False)
+        download_layout.addWidget(self.download_progress)
+
+        layout.addWidget(download_group)
+
     def _on_capture_clicked(self):
         """Handle capture button click"""
         # Ensure directory exists
@@ -105,10 +149,18 @@ class CapturePanel(QWidget):
             self.save_directory = directory
             self.save_dir_input.setText(directory)
 
+    def _on_download_clicked(self):
+        """Handle download button click"""
+        start = self.start_time.dateTime().toPyDateTime()
+        end = self.end_time.dateTime().toPyDateTime()
+        count = self.max_count.value()
+        self.download_requested.emit(start, end, count)
+
     def set_enabled(self, enabled: bool):
         """Enable/disable capture controls"""
         self.capture_btn.setEnabled(enabled)
         self.liveview_btn.setEnabled(enabled)
+        self.download_btn.setEnabled(enabled)
 
     def set_capturing(self, capturing: bool):
         """Set capturing state"""
@@ -137,3 +189,22 @@ class CapturePanel(QWidget):
     def get_prefix(self) -> str:
         """Get filename prefix"""
         return self.prefix_input.text()
+
+    def set_download_progress(self, current: int, total: int):
+        """Set download progress"""
+        self.download_progress.setVisible(True)
+        self.download_progress.setRange(0, total)
+        self.download_progress.setValue(current)
+        if current >= total:
+            self.download_progress.setVisible(False)
+
+    def set_downloading(self, downloading: bool):
+        """Set downloading state"""
+        self.download_btn.setEnabled(not downloading)
+        if downloading:
+            self.download_btn.setText("Downloading...")
+            self.download_progress.setVisible(True)
+            self.download_progress.setRange(0, 0)
+        else:
+            self.download_btn.setText("Download Photos")
+            self.download_progress.setVisible(False)

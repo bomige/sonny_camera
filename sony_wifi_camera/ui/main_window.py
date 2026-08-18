@@ -17,7 +17,7 @@ from .status_panel import StatusPanel
 from .capture_panel import CapturePanel
 
 from sony_usb import SonyUSBCamera
-from threads import ConnectionThread, CaptureThread, LiveViewThread
+from threads import ConnectionThread, CaptureThread, LiveViewThread, DownloadThread
 
 
 class SonyCameraApp(QMainWindow):
@@ -31,6 +31,7 @@ class SonyCameraApp(QMainWindow):
         self.connection_thread: ConnectionThread = None
         self.capture_thread: CaptureThread = None
         self.liveview_thread: LiveViewThread = None
+        self.download_thread: DownloadThread = None
 
         self.init_ui()
         self.connect_signals()
@@ -104,6 +105,7 @@ class SonyCameraApp(QMainWindow):
         # Capture panel signals
         self.capture_panel.capture_requested.connect(self.capture_photo)
         self.capture_panel.liveview_toggle_requested.connect(self.toggle_liveview)
+        self.capture_panel.download_requested.connect(self.download_photos)
 
     def apply_styles(self):
         """Apply application-wide styles"""
@@ -239,6 +241,45 @@ class SonyCameraApp(QMainWindow):
         else:
             self.status_bar.showMessage(f"Capture failed: {result}")
             QMessageBox.warning(self, "Capture Failed", result)
+
+    def download_photos(self, start_time, end_time, max_count):
+        """Download photos from camera"""
+        if not self.camera or not self.camera.connected:
+            QMessageBox.warning(self, "Error", "Camera not connected")
+            return
+
+        save_dir = self.capture_panel.get_save_directory()
+
+        self.status_bar.showMessage("Downloading photos...")
+        self.capture_panel.set_downloading(True)
+
+        self.download_thread = DownloadThread(
+            self.camera, save_dir, start_time, end_time, max_count
+        )
+        self.download_thread.progress.connect(self._on_download_progress)
+        self.download_thread.file_downloaded.connect(self._on_file_downloaded)
+        self.download_thread.finished_signal.connect(self._on_download_finished)
+        self.download_thread.error.connect(self._on_download_error)
+        self.download_thread.start()
+
+    def _on_download_progress(self, current: int, total: int):
+        """Handle download progress"""
+        self.capture_panel.set_download_progress(current, total)
+        self.status_bar.showMessage(f"Downloading {current}/{total}...")
+
+    def _on_file_downloaded(self, file_path: str):
+        """Handle file downloaded"""
+        pass  # Could update preview or list
+
+    def _on_download_finished(self, success_count: int, total_count: int):
+        """Handle download completion"""
+        self.capture_panel.set_downloading(False)
+        self.status_bar.showMessage(f"Downloaded {success_count}/{total_count} files")
+
+    def _on_download_error(self, error: str):
+        """Handle download error"""
+        self.capture_panel.set_downloading(False)
+        self.status_bar.showMessage(f"Download error: {error}")
 
     def closeEvent(self, event):
         """Handle window close"""
