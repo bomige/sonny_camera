@@ -1,0 +1,4 @@
+# Sony Camera Wi-Fi Remote Control
+# Dependencies
+
+PyQt5>=5.15.0
