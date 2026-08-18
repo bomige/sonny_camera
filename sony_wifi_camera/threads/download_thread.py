@@ -2,12 +2,12 @@
 Download Thread
 카메라에서 사진 다운로드를 위한 백그라운드 스레드
 
-Content Transfer Mode를 사용하여 카메라의 SD 카드에서 파일을 브라우징하고 다운로드합니다.
-Remote Control Mode에서는 콘텐츠 브라우징이 지원되지 않으므로,
-세션을 닫고 Content Transfer Mode로 다시 열어야 합니다.
+Content Transfer Mode에서 표준 PTP 명령(GetObjectHandles, GetObjectInfo, GetObject)을
+사용하여 카메라의 SD 카드에서 파일을 브라우징하고 다운로드합니다.
 """
 
 import os
+import struct
 import time
 import logging
 from datetime import datetime
@@ -15,9 +15,14 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 logger = logging.getLogger(__name__)
 
+# PTP object format codes
+FORMAT_FOLDER = 0x3001
+FORMAT_JPEG = 0x3801
+FORMAT_ARW = 0xB905
+
 
 class DownloadThread(QThread):
-    """Thread for downloading photos from camera using Content Transfer Mode"""
+    """Thread for downloading photos from camera using PTP commands"""
 
     # Signals
     progress = pyqtSignal(int, int)  # current, total
@@ -35,7 +40,7 @@ class DownloadThread(QThread):
         self.max_count = max_count
 
     def run(self):
-        """Run download process using Content Transfer Mode session"""
+        """Run download process using PTP commands in Content Transfer Mode"""
         try:
             logger.info(f"Starting download: {self.start_time} ~ {self.end_time}, max={self.max_count}")
 
@@ -57,10 +62,9 @@ class DownloadThread(QThread):
                 self.finished_signal.emit(0, 0)
                 return
 
-            # Strategy: Close current session, open Content Transfer Mode session
+            # Close current session and open Content Transfer Mode session
             logger.info("Switching to Content Transfer Mode...")
 
-            # Close current session
             try:
                 transport.send(PTPOpCode.CLOSE_SESSION)
                 logger.info("Closed current session")
@@ -78,75 +82,62 @@ class DownloadThread(QThread):
                 logger.info("Opened SDIO session in Content Transfer Mode")
             except Exception as e:
                 logger.error(f"Content Transfer session failed: {e}")
-                # Try to recover by reopening normal session
                 self._recover_session(cam, transport, PTPOpCode)
                 self.error.emit(f"Content Transfer Mode not supported: {e}")
                 self.finished_signal.emit(0, 0)
                 return
 
-            # Authenticate in Content Transfer Mode
+            # Use standard PTP commands to browse files
             try:
-                cam.authenticate()
-                logger.info("Authenticated in Content Transfer Mode")
+                logger.info("Getting storage IDs...")
+                storage_ids = self._get_storage_ids(transport, PTPOpCode, ResponseCode)
+                logger.info(f"Storage IDs: {[hex(s) for s in storage_ids]}")
+
+                if not storage_ids:
+                    storage_ids = [0x00010001]  # Default
+
+                # Get all image files
+                all_images = []
+                for sid in storage_ids:
+                    images = self._enumerate_images(transport, sid, PTPOpCode, ResponseCode)
+                    all_images.extend(images)
+                    logger.info(f"Storage {hex(sid)}: {len(images)} images found")
+
+                logger.info(f"Total images found: {len(all_images)}")
+
             except Exception as e:
-                logger.error(f"Authentication in CT mode failed: {e}")
+                logger.error(f"Failed to enumerate files: {e}")
                 self._recover_session(cam, transport, PTPOpCode)
-                self.error.emit(f"Authentication failed: {e}")
+                self.error.emit(f"Failed to list files: {e}")
                 self.finished_signal.emit(0, 0)
                 return
 
-            # Now get content list
-            try:
-                logger.info("Getting content list...")
-                items = cam.get_content_info_list(start_index=0, max_count=500)
-                logger.info(f"Found {len(items) if items else 0} items")
-            except Exception as e:
-                logger.error(f"Get content list failed: {e}")
+            if not all_images:
                 self._recover_session(cam, transport, PTPOpCode)
-                self.error.emit(f"Failed to get content list: {e}")
+                self.error.emit("No image files found on camera")
                 self.finished_signal.emit(0, 0)
                 return
 
-            if not items:
-                self._recover_session(cam, transport, PTPOpCode)
-                self.error.emit("No files found on camera")
-                self.finished_signal.emit(0, 0)
-                return
-
-            # Filter by time range and file type
-            image_formats = [0x3801, 0x3800, 0xB905]  # EXIF/JPEG, Undefined Image, ARW
+            # Filter by time range
             filtered = []
-
-            for item in items:
-                logger.debug(f"Item: {item}")
-
-                # Check format
-                fmt = item.get('format_code', 0)
-                if fmt not in image_formats:
-                    continue
-
-                # Check time range
-                dt_str = item.get('date_time', '')
-                if dt_str:
+            for img in all_images:
+                capture_date = img.get('capture_date', '')
+                if capture_date:
                     try:
-                        # Parse datetime (format: YYYYMMDDTHHMMSS or similar)
-                        if 'T' in dt_str:
-                            item_time = datetime.strptime(dt_str, '%Y%m%dT%H%M%S')
-                        else:
-                            item_time = datetime.strptime(dt_str, '%Y%m%d%H%M%S')
-
-                        if self.start_time <= item_time <= self.end_time:
-                            filtered.append(item)
-                            logger.info(f"Matched: {item.get('file_name')} @ {item_time}")
+                        # Parse date (format: YYYYMMDDTHHMMSS)
+                        img_time = datetime.strptime(capture_date, '%Y%m%dT%H%M%S')
+                        if self.start_time <= img_time <= self.end_time:
+                            filtered.append(img)
+                            logger.info(f"Matched: {img.get('filename')} @ {img_time}")
                     except Exception as e:
-                        # If can't parse time, include anyway
-                        logger.debug(f"Time parse error for {dt_str}: {e}")
-                        filtered.append(item)
+                        # If can't parse, include anyway
+                        logger.debug(f"Date parse error: {e}")
+                        filtered.append(img)
                 else:
-                    # No time info, include anyway
-                    filtered.append(item)
+                    # No date info, include anyway
+                    filtered.append(img)
 
-            logger.info(f"Filtered to {len(filtered)} items in time range")
+            logger.info(f"Filtered to {len(filtered)} images in time range")
 
             if not filtered:
                 self._recover_session(cam, transport, PTPOpCode)
@@ -154,19 +145,19 @@ class DownloadThread(QThread):
                 self.finished_signal.emit(0, 0)
                 return
 
-            # Limit count
+            # Limit count and download
             to_download = filtered[:self.max_count]
             total = len(to_download)
             success_count = 0
 
             os.makedirs(self.save_dir, exist_ok=True)
 
-            for i, item in enumerate(to_download):
+            for i, img in enumerate(to_download):
                 self.progress.emit(i + 1, total)
-                logger.info(f"Downloading {i+1}/{total}: {item.get('file_name')}")
+                logger.info(f"Downloading {i+1}/{total}: {img.get('filename')}")
 
                 try:
-                    save_path = self._download_item(cam, item)
+                    save_path = self._download_file(transport, img, PTPOpCode, ResponseCode)
                     if save_path:
                         self.file_downloaded.emit(save_path)
                         success_count += 1
@@ -183,6 +174,153 @@ class DownloadThread(QThread):
             logger.exception(f"Download error: {e}")
             self.error.emit(f"Download error: {str(e)}")
             self.finished_signal.emit(0, 0)
+
+    def _get_storage_ids(self, transport, PTPOpCode, ResponseCode) -> list:
+        """Get storage IDs using PTP command"""
+        resp, data = transport.receive(PTPOpCode.GET_STORAGE_ID)
+        if resp.code != ResponseCode.OK or len(data) < 4:
+            return []
+        count = struct.unpack_from("<I", data, 0)[0]
+        if count == 0:
+            return []
+        return list(struct.unpack_from(f"<{count}I", data, 4))
+
+    def _get_object_handles(self, transport, storage_id, format_code, parent, PTPOpCode, ResponseCode) -> list:
+        """Get object handles using PTP command"""
+        resp, data = transport.receive(
+            PTPOpCode.GET_OBJECT_HANDLES,
+            [storage_id, format_code, parent]
+        )
+        if resp.code != ResponseCode.OK or len(data) < 4:
+            return []
+        count = struct.unpack_from("<I", data, 0)[0]
+        if count == 0:
+            return []
+        return list(struct.unpack_from(f"<{count}I", data, 4))
+
+    def _get_object_info(self, transport, handle, PTPOpCode, ResponseCode) -> dict:
+        """Get object info and parse it"""
+        resp, data = transport.receive(PTPOpCode.GET_OBJECT_INFO, [handle])
+        if resp.code != ResponseCode.OK or len(data) < 53:
+            return {}
+
+        storage_id, obj_format, protect, obj_size = struct.unpack_from("<IHHI", data, 0)
+
+        # Parse filename at offset 52
+        offset = 52
+        filename = ""
+        if offset < len(data):
+            name_len = data[offset]
+            offset += 1
+            if name_len > 0 and offset + name_len * 2 <= len(data):
+                filename = data[offset:offset + (name_len - 1) * 2].decode(
+                    "utf-16-le", errors="replace"
+                )
+                offset += name_len * 2
+
+        # Parse capture date
+        capture_date = ""
+        if offset < len(data):
+            date_len = data[offset]
+            offset += 1
+            if date_len > 0 and offset + date_len * 2 <= len(data):
+                capture_date = data[offset:offset + (date_len - 1) * 2].decode(
+                    "utf-16-le", errors="replace"
+                )
+
+        return {
+            "handle": handle,
+            "storage_id": storage_id,
+            "format": obj_format,
+            "size": obj_size,
+            "filename": filename,
+            "capture_date": capture_date,
+        }
+
+    def _enumerate_images(self, transport, storage_id, PTPOpCode, ResponseCode) -> list:
+        """Enumerate all image files on storage"""
+        all_images = []
+        image_formats = [FORMAT_JPEG, FORMAT_ARW, 0x3800]  # JPEG, ARW, Undefined Image
+
+        # Try hierarchical: get folders first, then images in each folder
+        folders = self._get_object_handles(transport, storage_id, FORMAT_FOLDER, 0xFFFFFFFF, PTPOpCode, ResponseCode)
+        logger.info(f"  Found {len(folders)} folders")
+
+        for folder_handle in folders:
+            for fmt in image_formats:
+                handles = self._get_object_handles(transport, storage_id, fmt, folder_handle, PTPOpCode, ResponseCode)
+                for h in handles:
+                    try:
+                        info = self._get_object_info(transport, h, PTPOpCode, ResponseCode)
+                        if info:
+                            all_images.append(info)
+                    except Exception as e:
+                        logger.debug(f"Failed to get info for handle {hex(h)}: {e}")
+
+            # Also check subfolders
+            subfolders = self._get_object_handles(transport, storage_id, FORMAT_FOLDER, folder_handle, PTPOpCode, ResponseCode)
+            for sf in subfolders:
+                for fmt in image_formats:
+                    handles = self._get_object_handles(transport, storage_id, fmt, sf, PTPOpCode, ResponseCode)
+                    for h in handles:
+                        try:
+                            info = self._get_object_info(transport, h, PTPOpCode, ResponseCode)
+                            if info:
+                                all_images.append(info)
+                        except Exception as e:
+                            logger.debug(f"Failed to get info for handle {hex(h)}: {e}")
+
+        # If no images found via hierarchy, try flat query
+        if not all_images:
+            logger.info("  Trying flat query...")
+            for fmt in image_formats:
+                handles = self._get_object_handles(transport, storage_id, fmt, 0x00000000, PTPOpCode, ResponseCode)
+                for h in handles:
+                    try:
+                        info = self._get_object_info(transport, h, PTPOpCode, ResponseCode)
+                        if info:
+                            all_images.append(info)
+                    except Exception as e:
+                        logger.debug(f"Failed to get info for handle {hex(h)}: {e}")
+
+        # Sort by capture date (newest first)
+        all_images.sort(key=lambda x: x.get('capture_date', ''), reverse=True)
+        return all_images
+
+    def _download_file(self, transport, img: dict, PTPOpCode, ResponseCode) -> str:
+        """Download a single file"""
+        handle = img.get('handle')
+        if handle is None:
+            return None
+
+        filename = img.get('filename', f'IMG_{handle:08X}.jpg')
+
+        # Make safe filename
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
+        save_path = os.path.join(self.save_dir, safe_name)
+
+        # Avoid overwriting
+        if os.path.exists(save_path):
+            base, ext = os.path.splitext(safe_name)
+            counter = 1
+            while os.path.exists(save_path):
+                save_path = os.path.join(self.save_dir, f"{base}_{counter}{ext}")
+                counter += 1
+
+        # Download using PTP GetObject
+        logger.info(f"Getting object data for handle: {hex(handle)}")
+        resp, data = transport.receive(PTPOpCode.GET_OBJECT, [handle])
+
+        if resp.code != ResponseCode.OK:
+            logger.error(f"GetObject failed: {hex(resp.code)}")
+            return None
+
+        if data:
+            with open(save_path, 'wb') as f:
+                f.write(data)
+            return save_path
+
+        return None
 
     def _recover_session(self, cam, transport, PTPOpCode):
         """Recover normal Remote Control Mode session after Content Transfer"""
@@ -214,35 +352,3 @@ class DownloadThread(QThread):
             logger.info("Recovered to Remote Control Mode")
         except Exception as e:
             logger.error(f"Session recovery failed: {e}")
-
-    def _download_item(self, cam, item: dict) -> str:
-        """Download a single item"""
-        content_id = item.get('content_id')
-        if content_id is None:
-            logger.error("No content_id in item")
-            return None
-
-        file_name = item.get('file_name', f'IMG_{content_id}.jpg')
-
-        # Make safe filename
-        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in file_name)
-        save_path = os.path.join(self.save_dir, safe_name)
-
-        # Avoid overwriting
-        if os.path.exists(save_path):
-            base, ext = os.path.splitext(safe_name)
-            counter = 1
-            while os.path.exists(save_path):
-                save_path = os.path.join(self.save_dir, f"{base}_{counter}{ext}")
-                counter += 1
-
-        # Download using pysonycam API
-        logger.info(f"Getting content data for ID: {content_id}")
-        data = cam.get_content_data(content_id)
-
-        if data:
-            with open(save_path, 'wb') as f:
-                f.write(data)
-            return save_path
-
-        return None
