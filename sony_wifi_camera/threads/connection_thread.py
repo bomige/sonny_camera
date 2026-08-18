@@ -23,15 +23,17 @@ class ConnectionThread(QThread):
             success = self.camera.connect(timeout=self.timeout)
             if success:
                 model = getattr(self.camera, 'camera_info', None)
-                if model and hasattr(model, 'model'):
+                if model and hasattr(model, 'model') and model.model:
                     self.connected.emit(True, f"Connected to {model.model}")
                 else:
                     self.connected.emit(True, "Connected successfully")
             else:
-                self.connected.emit(False, "Connection failed - check camera settings")
-        except ConnectionRefusedError:
-            self.connected.emit(False, "Connection refused - enable PC Remote or Smartphone Connect")
-        except TimeoutError:
-            self.connected.emit(False, "Connection timeout - check IP address and network")
+                self.connected.emit(False, "Connection failed - check USB and camera settings")
         except Exception as e:
-            self.connected.emit(False, f"Connection error: {str(e)}")
+            error_msg = str(e)
+            if "Access denied" in error_msg or "WinUSB" in error_msg:
+                self.connected.emit(False, "Driver error - install WinUSB driver using Zadig")
+            elif "No device" in error_msg or "not found" in error_msg.lower():
+                self.connected.emit(False, "Camera not found - connect USB and enable PC Remote mode")
+            else:
+                self.connected.emit(False, f"Connection error: {error_msg}")

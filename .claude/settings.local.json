@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(git clone:*)",
-      "Bash(unzip:*)"
+      "Bash(unzip:*)",
+      "Bash(del ptp_ip.py sony_api.py discovery.py camera_manager.py)",
+      "Bash(Remove-Item \"D:\\\\code_ex\\\\sonny\\\\sony_wifi_camera\\\\ptp_ip.py\", \"D:\\\\code_ex\\\\sonny\\\\sony_wifi_camera\\\\sony_api.py\", \"D:\\\\code_ex\\\\sonny\\\\sony_wifi_camera\\\\discovery.py\", \"D:\\\\code_ex\\\\sonny\\\\sony_wifi_camera\\\\camera_manager.py\" -Force)"
     ]
   }
 }

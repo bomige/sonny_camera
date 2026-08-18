@@ -24,40 +24,17 @@ class CaptureThread(QThread):
         self.capture_started.emit()
 
         try:
-            # Check if camera has capture_and_download method (HTTP API)
-            if hasattr(self.camera, 'capture_and_download') and self.save_path:
-                success = self.camera.capture_and_download(self.save_path)
-                if success:
+            result = self.camera.capture(self.save_path)
+
+            if result:
+                if self.save_path:
                     self.capture_complete.emit(True, f"Photo saved: {self.save_path}")
                 else:
-                    self.capture_complete.emit(False, "Capture failed")
-            # Check if camera has capture method that returns URL (HTTP API)
-            elif hasattr(self.camera, 'capture'):
-                result = self.camera.capture()
-                if result:
-                    # HTTP API returns URL string
-                    if isinstance(result, str):
-                        if self.save_path:
-                            # Download the image
-                            import requests
-                            response = requests.get(result, timeout=30)
-                            if response.status_code == 200:
-                                with open(self.save_path, 'wb') as f:
-                                    f.write(response.content)
-                                self.capture_complete.emit(True, f"Photo saved: {self.save_path}")
-                            else:
-                                self.capture_complete.emit(False, "Failed to download image")
-                        else:
-                            self.capture_complete.emit(True, f"Photo URL: {result}")
-                    # PTP-IP returns bool
-                    elif isinstance(result, bool) and result:
-                        self.capture_complete.emit(True, "Capture successful")
-                    else:
-                        self.capture_complete.emit(False, "Capture failed")
-                else:
-                    self.capture_complete.emit(False, "Capture failed - check camera state")
+                    self.capture_complete.emit(True, "Capture successful")
+                    if isinstance(result, bytes):
+                        self.image_data_received.emit(result)
             else:
-                self.capture_complete.emit(False, "Camera does not support capture")
+                self.capture_complete.emit(False, "Capture failed - check camera state")
 
         except Exception as e:
             self.capture_complete.emit(False, f"Capture error: {str(e)}")
