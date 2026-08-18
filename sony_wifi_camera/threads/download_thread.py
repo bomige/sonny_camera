@@ -29,25 +29,69 @@ class DownloadThread(QThread):
     def run(self):
         """Run download process"""
         try:
-            # Get file list from camera
-            files = self._get_files_in_range()
-
-            if not files:
-                self.error.emit("No files found in the specified time range")
+            # Get internal camera object
+            if not hasattr(self.camera, '_camera') or not self.camera._camera:
+                self.error.emit("Camera not properly connected")
                 self.finished_signal.emit(0, 0)
                 return
 
-            total = min(len(files), self.max_count)
+            cam = self.camera._camera
+
+            # Get content list using pysonycam API
+            if not hasattr(cam, 'get_content_info_list'):
+                self.error.emit("Camera does not support content browsing")
+                self.finished_signal.emit(0, 0)
+                return
+
+            # Get file list
+            items = cam.get_content_info_list(start_index=0, max_count=500)
+
+            if not items:
+                self.error.emit("No files found on camera")
+                self.finished_signal.emit(0, 0)
+                return
+
+            # Filter by time range and file type (JPEG/ARW)
+            image_formats = [0x3801, 0x3800, 0xB905]  # EXIF/JPEG, Undefined Image, ARW
+            filtered = []
+
+            for item in items:
+                # Check format
+                fmt = item.get('format_code', 0)
+                if fmt not in image_formats:
+                    continue
+
+                # Check time range
+                dt_str = item.get('date_time', '')
+                if dt_str:
+                    try:
+                        # Parse datetime string (format: YYYYMMDDTHHMMSS)
+                        item_time = datetime.strptime(dt_str, '%Y%m%dT%H%M%S')
+                        if self.start_time <= item_time <= self.end_time:
+                            filtered.append(item)
+                    except:
+                        # If can't parse, include anyway
+                        filtered.append(item)
+                else:
+                    filtered.append(item)
+
+            if not filtered:
+                self.error.emit(f"No images found in time range")
+                self.finished_signal.emit(0, 0)
+                return
+
+            # Limit count
+            to_download = filtered[:self.max_count]
+            total = len(to_download)
             success_count = 0
 
             os.makedirs(self.save_dir, exist_ok=True)
 
-            for i, file_info in enumerate(files[:self.max_count]):
+            for i, item in enumerate(to_download):
                 self.progress.emit(i + 1, total)
 
                 try:
-                    # Download file
-                    save_path = self._download_file(file_info)
+                    save_path = self._download_item(cam, item)
                     if save_path:
                         self.file_downloaded.emit(save_path)
                         success_count += 1
@@ -60,68 +104,31 @@ class DownloadThread(QThread):
             self.error.emit(f"Download error: {str(e)}")
             self.finished_signal.emit(0, 0)
 
-    def _get_files_in_range(self) -> list:
-        """Get list of files within time range"""
-        files = []
+    def _download_item(self, cam, item: dict) -> str:
+        """Download a single item"""
+        content_id = item.get('content_id')
+        if content_id is None:
+            return None
 
-        try:
-            # pysonycam uses browse_content or similar
-            if hasattr(self.camera, '_camera') and self.camera._camera:
-                cam = self.camera._camera
+        file_name = item.get('file_name', f'IMG_{content_id}.jpg')
 
-                # Get object handles
-                if hasattr(cam, 'get_object_handles'):
-                    handles = cam.get_object_handles()
+        # Make safe filename
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in file_name)
+        save_path = os.path.join(self.save_dir, safe_name)
 
-                    for handle in handles:
-                        try:
-                            info = cam.get_object_info(handle)
-                            if info:
-                                # Check if it's an image
-                                if hasattr(info, 'format_code') and info.format_code in [0x3801, 0x3800]:  # JPEG, EXIF_JPEG
-                                    # Check time range
-                                    if hasattr(info, 'capture_date'):
-                                        capture_time = info.capture_date
-                                        if self.start_time <= capture_time <= self.end_time:
-                                            files.append({
-                                                'handle': handle,
-                                                'info': info,
-                                                'name': getattr(info, 'filename', f'IMG_{handle}.jpg')
-                                            })
-                        except:
-                            pass
+        # Avoid overwriting
+        if os.path.exists(save_path):
+            base, ext = os.path.splitext(safe_name)
+            counter = 1
+            while os.path.exists(save_path):
+                save_path = os.path.join(self.save_dir, f"{base}_{counter}{ext}")
+                counter += 1
 
-        except Exception as e:
-            # Fallback: try to get recent files
-            pass
-
-        return files
-
-    def _download_file(self, file_info: dict) -> str:
-        """Download a single file"""
-        try:
-            handle = file_info['handle']
-            filename = file_info['name']
-            save_path = os.path.join(self.save_dir, filename)
-
-            # Avoid overwriting
-            if os.path.exists(save_path):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(save_path):
-                    save_path = os.path.join(self.save_dir, f"{base}_{counter}{ext}")
-                    counter += 1
-
-            if hasattr(self.camera, '_camera') and self.camera._camera:
-                cam = self.camera._camera
-                if hasattr(cam, 'get_object'):
-                    data = cam.get_object(handle)
-                    if data:
-                        with open(save_path, 'wb') as f:
-                            f.write(data)
-                        return save_path
-
-        except Exception as e:
-            pass
+        # Download
+        data = cam.get_content_data(content_id)
+        if data:
+            with open(save_path, 'wb') as f:
+                f.write(data)
+            return save_path
 
         return None
