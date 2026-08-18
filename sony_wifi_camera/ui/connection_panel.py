@@ -77,9 +77,17 @@ class ConnectionPanel(QGroupBox):
         """Get IP address"""
         return self.ip_input.text().strip()
 
+    def set_ip(self, ip: str):
+        """Set IP address"""
+        self.ip_input.setText(ip)
+
     def get_port(self) -> int:
         """Get port number"""
         return self.port_input.value()
+
+    def set_port(self, port: int):
+        """Set port number"""
+        self.port_input.setValue(port)
 
     def is_connected(self) -> bool:
         """Check if connected"""

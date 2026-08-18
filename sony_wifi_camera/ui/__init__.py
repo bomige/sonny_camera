@@ -5,6 +5,8 @@ from .connection_panel import ConnectionPanel
 from .capture_panel import CapturePanel
 from .status_panel import StatusPanel
 from .styles import AppStyles
+from .discovery_panel import DiscoveryPanel
+from .multi_camera_panel import MultiCameraPanel
 
 __all__ = [
     'SonyCameraApp',
@@ -12,5 +14,7 @@ __all__ = [
     'ConnectionPanel',
     'CapturePanel',
     'StatusPanel',
-    'AppStyles'
+    'AppStyles',
+    'DiscoveryPanel',
+    'MultiCameraPanel'
 ]
