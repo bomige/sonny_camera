@@ -5,8 +5,6 @@ LiveView Thread
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from ptp_ip import SonyPtpIpCamera
-
 
 class LiveViewThread(QThread):
     """Thread for live view streaming"""
@@ -17,7 +15,7 @@ class LiveViewThread(QThread):
     started_signal = pyqtSignal()
     stopped_signal = pyqtSignal()
 
-    def __init__(self, camera: SonyPtpIpCamera, fps: int = 30):
+    def __init__(self, camera, fps: int = 30):
         super().__init__()
         self.camera = camera
         self.fps = fps
@@ -29,25 +27,48 @@ class LiveViewThread(QThread):
         self._running = True
         self.started_signal.emit()
 
-        error_count = 0
-        max_errors = 10
+        # Check if camera uses HTTP API (start_liveview with callback)
+        if hasattr(self.camera, 'start_liveview'):
+            # HTTP API - use callback-based streaming
+            def frame_callback(frame_data: bytes):
+                if self._running:
+                    self.frame_ready.emit(frame_data)
 
-        while self._running:
-            try:
-                frame = self.camera.get_liveview_frame()
-                if frame:
-                    self.frame_ready.emit(frame)
-                    error_count = 0
-                else:
+            success = self.camera.start_liveview(callback=frame_callback)
+
+            if not success:
+                self.error.emit("Failed to start LiveView")
+                self.stopped_signal.emit()
+                return
+
+            # Wait while running
+            while self._running:
+                self.msleep(100)
+
+            # Stop liveview
+            self.camera.stop_liveview()
+
+        else:
+            # PTP-IP style - polling based
+            error_count = 0
+            max_errors = 10
+
+            while self._running:
+                try:
+                    frame = self.camera.get_liveview_frame()
+                    if frame:
+                        self.frame_ready.emit(frame)
+                        error_count = 0
+                    else:
+                        error_count += 1
+
+                except Exception as e:
                     error_count += 1
+                    if error_count >= max_errors:
+                        self.error.emit(f"LiveView error: {str(e)}")
+                        break
 
-            except Exception as e:
-                error_count += 1
-                if error_count >= max_errors:
-                    self.error.emit(f"LiveView error: {str(e)}")
-                    break
-
-            self.msleep(self._frame_interval)
+                self.msleep(self._frame_interval)
 
         self.stopped_signal.emit()
 

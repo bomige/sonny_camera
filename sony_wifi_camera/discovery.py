@@ -122,8 +122,8 @@ class CameraDiscovery:
                 key, value = line.split(':', 1)
                 headers[key.upper().strip()] = value.strip()
 
-        # Check for PTP-IP port
-        port = 15740  # Default PTP-IP port
+        # Check for HTTP API port
+        port = 8080  # Default Sony Camera Remote API port
 
         # Extract model from response
         model = "Sony Camera"
@@ -156,12 +156,12 @@ class CameraDiscovery:
 
 class NetworkScanner:
     """
-    Simple network scanner to find devices with open PTP-IP port
+    Simple network scanner to find devices with open HTTP API port
 
     SSDP가 작동하지 않을 때 포트 스캔으로 카메라 찾기
     """
 
-    PTP_IP_PORT = 15740
+    HTTP_API_PORT = 8080
 
     def __init__(self):
         self.found_devices: List[str] = []
@@ -169,7 +169,7 @@ class NetworkScanner:
     def scan_subnet(self, base_ip: str = None, timeout: float = 0.5,
                     callback: Callable = None) -> List[str]:
         """
-        Scan local subnet for devices with PTP-IP port open
+        Scan local subnet for devices with HTTP API port open
 
         Args:
             base_ip: Base IP (e.g., "192.168.1"). Auto-detect if None.
@@ -177,7 +177,7 @@ class NetworkScanner:
             callback: Optional callback for progress
 
         Returns:
-            List of IPs with PTP-IP port open
+            List of IPs with HTTP API port open
         """
         self.found_devices = []
 
@@ -188,7 +188,7 @@ class NetworkScanner:
             logger.error("Could not determine local subnet")
             return []
 
-        logger.info(f"Scanning subnet {base_ip}.0/24 for PTP-IP devices...")
+        logger.info(f"Scanning subnet {base_ip}.0/24 for Sony cameras...")
 
         threads = []
         for i in range(1, 255):
@@ -214,15 +214,15 @@ class NetworkScanner:
         return self.found_devices
 
     def _check_port(self, ip: str, timeout: float):
-        """Check if PTP-IP port is open"""
+        """Check if HTTP API port is open"""
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
-            result = sock.connect_ex((ip, self.PTP_IP_PORT))
+            result = sock.connect_ex((ip, self.HTTP_API_PORT))
             sock.close()
 
             if result == 0:
-                logger.info(f"Found PTP-IP device at {ip}")
+                logger.info(f"Found device at {ip}:{self.HTTP_API_PORT}")
                 self.found_devices.append(ip)
 
         except Exception:
@@ -270,7 +270,7 @@ def discover_cameras(timeout: float = 5.0) -> List[DiscoveredCamera]:
         for ip in ips:
             cameras.append(DiscoveredCamera(
                 ip=ip,
-                port=15740,
+                port=8080,
                 name="Sony Camera",
                 model="Unknown",
                 uuid=""

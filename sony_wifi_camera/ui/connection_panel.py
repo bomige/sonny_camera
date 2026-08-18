@@ -29,15 +29,15 @@ class ConnectionPanel(QGroupBox):
         # IP Address
         layout.addWidget(QLabel("Camera IP:"), 0, 0)
         self.ip_input = QLineEdit()
-        self.ip_input.setPlaceholderText("192.168.1.1")
-        self.ip_input.setText("192.168.122.1")
+        self.ip_input.setPlaceholderText("192.168.0.1")
+        self.ip_input.setText("")
         layout.addWidget(self.ip_input, 0, 1)
 
         # Port
         layout.addWidget(QLabel("Port:"), 1, 0)
         self.port_input = QSpinBox()
         self.port_input.setRange(1, 65535)
-        self.port_input.setValue(15740)
+        self.port_input.setValue(8080)  # Sony Camera Remote API default port
         layout.addWidget(self.port_input, 1, 1)
 
         # Connect button

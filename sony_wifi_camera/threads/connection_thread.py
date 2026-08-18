@@ -5,8 +5,6 @@ Connection Thread
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from ptp_ip import SonyPtpIpCamera
-
 
 class ConnectionThread(QThread):
     """Thread for camera connection"""
@@ -14,7 +12,7 @@ class ConnectionThread(QThread):
     # Signals
     connected = pyqtSignal(bool, str)  # success, message
 
-    def __init__(self, camera: SonyPtpIpCamera, timeout: float = 10.0):
+    def __init__(self, camera, timeout: float = 10.0):
         super().__init__()
         self.camera = camera
         self.timeout = timeout
@@ -24,11 +22,15 @@ class ConnectionThread(QThread):
         try:
             success = self.camera.connect(timeout=self.timeout)
             if success:
-                self.connected.emit(True, "Connected successfully")
+                model = getattr(self.camera, 'camera_info', None)
+                if model and hasattr(model, 'model'):
+                    self.connected.emit(True, f"Connected to {model.model}")
+                else:
+                    self.connected.emit(True, "Connected successfully")
             else:
                 self.connected.emit(False, "Connection failed - check camera settings")
         except ConnectionRefusedError:
-            self.connected.emit(False, "Connection refused - camera may not be in PC Remote mode")
+            self.connected.emit(False, "Connection refused - enable PC Remote or Smartphone Connect")
         except TimeoutError:
             self.connected.emit(False, "Connection timeout - check IP address and network")
         except Exception as e:

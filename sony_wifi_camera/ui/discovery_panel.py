@@ -46,7 +46,7 @@ class DiscoveryThread(QThread):
             for ip in ips:
                 cam = DiscoveredCamera(
                     ip=ip,
-                    port=15740,
+                    port=8080,
                     name="Sony Camera",
                     model="Unknown",
                     uuid=""

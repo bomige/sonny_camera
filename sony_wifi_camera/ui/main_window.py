@@ -19,7 +19,7 @@ from .capture_panel import CapturePanel
 from .discovery_panel import DiscoveryPanel
 from .multi_camera_panel import MultiCameraPanel
 
-from ptp_ip import SonyPtpIpCamera
+from sony_api import SonyCameraAPI
 from camera_manager import CameraManager
 from threads import ConnectionThread, CaptureThread, LiveViewThread
 
@@ -34,7 +34,7 @@ class SonyCameraApp(QMainWindow):
         self.camera_manager = CameraManager()
 
         # Single camera mode
-        self.camera: SonyPtpIpCamera = None
+        self.camera: SonyCameraAPI = None
         self.connection_thread: ConnectionThread = None
         self.capture_thread: CaptureThread = None
         self.liveview_thread: LiveViewThread = None
@@ -99,7 +99,7 @@ class SonyCameraApp(QMainWindow):
         right_panel.addWidget(self.mode_tabs)
 
         # Info label
-        info_label = QLabel("Based on Sony Camera Remote SDK\nPTP-IP Protocol")
+        info_label = QLabel("Sony Camera Remote API\nHTTP/JSON Protocol")
         info_label.setStyleSheet("color: #888; font-size: 10px;")
         right_panel.addWidget(info_label)
 
@@ -172,7 +172,7 @@ class SonyCameraApp(QMainWindow):
         self.connection_panel.set_connecting(True)
         self.status_panel.set_status("Connecting...", connecting=True)
 
-        self.camera = SonyPtpIpCamera(ip, port)
+        self.camera = SonyCameraAPI(ip, port)
 
         self.connection_thread = ConnectionThread(self.camera)
         self.connection_thread.connected.connect(self._on_connection_result)
@@ -225,10 +225,13 @@ class SonyCameraApp(QMainWindow):
         battery = self.camera.get_battery_level()
         self.status_panel.set_battery_level(battery)
 
-        # Get device info
-        info = self.camera.get_device_info()
-        if info:
-            self.status_panel.set_model(info.get('model'))
+        # Get device info (HTTP API uses camera_info attribute)
+        if hasattr(self.camera, 'camera_info'):
+            self.status_panel.set_model(self.camera.camera_info.model)
+        elif hasattr(self.camera, 'get_device_info'):
+            info = self.camera.get_device_info()
+            if info:
+                self.status_panel.set_model(info.get('model'))
 
         self.status_bar.showMessage("Status refreshed")
 
